@@ -1,0 +1,61 @@
+&pinctrl {
+    spi1_default: spi1_default {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 1, 15)>,
+                    <NRF_PSEL(SPIM_MOSI, 1, 13)>;
+        };
+    };
+
+    spi1_sleep: spi1_sleep {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 1, 15)>,
+                    <NRF_PSEL(SPIM_MOSI, 1, 13)>;
+        };
+    };
+};
+
+&spi1 {
+    status = "okay";
+    pinctrl-0 = <&spi1_default>;
+    pinctrl-1 = <&spi1_sleep>;
+    pinctrl-names = "default", "sleep";
+    cs-gpios = <&gpio1 12 GPIO_ACTIVE_LOW>;
+};
+
+/ {
+    chosen {
+        zephyr,display = &epd;
+    };
+
+    epd_mipi: epd_mipi {
+        compatible = "zephyr,mipi-dbi-spi";
+        spi-dev = <&spi1>;
+        dc-gpios = <&gpio1 11 GPIO_ACTIVE_LOW>;
+        reset-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
+        write-only;
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        epd: ssd1680@0 {
+            compatible = "solomon,ssd1680";
+            reg = <0>;
+            mipi-max-frequency = <4000000>;
+            mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+
+            /* 屏幕参数 */
+            width = <250>;
+            height = <122>;
+            busy-gpios = <&gpio1 8 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+
+            tssv = <0x80>;
+
+            full {
+                border-waveform = <0x05>;
+            };
+
+            partial {
+                border-waveform = <0x3c>;
+            };
+        };
+    };
+};
