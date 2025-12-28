@@ -1,34 +1,61 @@
 #include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/display.h>
+#include <zephyr/display/cfb.h>
 #include <zephyr/logging/log.h>
-#include "epd_driver.h"
+
 #include "epd_graphics.h"
 
-LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
+
+/* --- Main Application --- */
 
 int main(void)
 {
-    LOG_INF("Raw SPI E-Paper Test Start");
+	const struct device *dev = device_get_binding(CUSTOM_EPD_LABEL);
 
-    if (epd_hardware_init() != 0) {
-        LOG_ERR("Hardware init failed");
-        return 0;
-    }
+	LOG_INF("Zephyr CFB E-Paper Test");
 
-    LOG_INF("Hardware Initialized. Starting Sequence...");
-    
-    epd_init_v4();
-    
-    /* Clear buffer to white (0xFF) */
-    epd_clear_buffer(0xFF);
+	if (!device_is_ready(dev)) {
+		LOG_ERR("Display device not ready");
+		return 0;
+	}
 
-    /* Draw text */
-    LOG_INF("Drawing 'hello epaper'...");
-    draw_string(10, 50, "hello", 2);
-    draw_string(10, 70, "epaper", 2);
+	if (display_set_pixel_format(dev, PIXEL_FORMAT_MONO10) != 0) {
+		LOG_ERR("Failed to set required pixel format");
+		return 0;
+	}
 
-    /* Send to display */
-    epd_display_framebuffer(framebuffer, sizeof(framebuffer));
+	if (cfb_framebuffer_init(dev)) {
+		LOG_ERR("Framebuffer initialization failed!");
+		return 0;
+	}
 
-    LOG_INF("Test Complete.");
-    return 0;
+	cfb_framebuffer_clear(dev, false);
+
+	/* Use default font (index 0) */
+	if (cfb_framebuffer_set_font(dev, 0)) {
+		LOG_WRN("Could not set font, CFB might not have fonts enabled in config");
+	}
+
+	LOG_INF("Drawing text with CFB...");
+	
+	/* 1. Draw to internal RAM buffer (Fast, no SPI transaction) */
+	cfb_print(dev, "21:41", 10, 50);
+	cfb_print(dev, "250x128 Mode", 10, 70);
+	
+	/* Draw a rectangle to prove graphics work */
+	struct cfb_position start = {5, 40};
+	struct cfb_position end = {200, 100};
+	cfb_draw_rect(dev, &start, &end);
+
+	/* Invert framebuffer to get black text on white background */
+	cfb_framebuffer_invert(dev);
+
+	/* 2. Flush internal RAM buffer to Display (Slow, SPI transaction) */
+	LOG_INF("Finalizing...");
+	cfb_framebuffer_finalize(dev);
+
+	LOG_INF("Done.");
+	return 0;
 }
