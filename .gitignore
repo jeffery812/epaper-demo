@@ -1,1 +1,16 @@
 build*/
+.west/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+
+# Python
+__pycache__/
+
+# Editors
+*~
+*.swp
