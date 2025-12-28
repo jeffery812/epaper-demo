@@ -3,6 +3,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/logging/log.h>
+#include <string.h>
 
 LOG_MODULE_REGISTER(raw_epd, LOG_LEVEL_INF);
 
@@ -14,6 +15,11 @@ static const struct spi_dt_spec spi_dev = SPI_DT_SPEC_GET(DT_NODELABEL(raw_spi),
 static const struct gpio_dt_spec busy_gpio = GPIO_DT_SPEC_GET(DT_NODELABEL(busy_pin), gpios);
 static const struct gpio_dt_spec rst_gpio = GPIO_DT_SPEC_GET(DT_NODELABEL(reset_pin), gpios);
 static const struct gpio_dt_spec dc_gpio = GPIO_DT_SPEC_GET(DT_NODELABEL(dc_pin), gpios);
+
+/* Framebuffer: 128 pixels (16 bytes) wide * 250 pixels high */
+#define EPD_WIDTH_BYTES 16
+#define EPD_HEIGHT      250
+static uint8_t framebuffer[EPD_WIDTH_BYTES * EPD_HEIGHT];
 
 static void epd_reset(void)
 {
@@ -73,7 +79,7 @@ void epd_init_v4(void)
     epd_send_data(0x00);
 
     epd_send_cmd(0x11); // Data entry mode
-    epd_send_data(0x03);
+    epd_send_data(0x03); // X increment, Y increment
 
     epd_send_cmd(0x3C); // BorderWavefrom
     epd_send_data(0x05);
@@ -95,20 +101,85 @@ void epd_init_v4(void)
     epd_send_data(0x0F); // 128/8 - 1 = 15
 
     epd_send_cmd(0x45); // Set Ram-Y
-    epd_send_data(0xF9); // 249
+    epd_send_data(0x00); // Start 0
     epd_send_data(0x00);
-    epd_send_data(0x00);
+    epd_send_data(0xF9); // End 249
     epd_send_data(0x00);
 }
 
-void epd_clear_screen(void)
+/* Simple 8x8 Bitmap Font Helper */
+static const uint8_t *get_char_bitmap(char c) {
+    /* Minimal font for "hello epaper" */
+    static const uint8_t char_h[] = {0x00, 0x40, 0x40, 0x5C, 0x62, 0x62, 0x62, 0x00};
+    static const uint8_t char_e[] = {0x00, 0x00, 0x3C, 0x42, 0x7E, 0x40, 0x3C, 0x00};
+    static const uint8_t char_l[] = {0x00, 0x60, 0x20, 0x20, 0x20, 0x20, 0x3C, 0x00};
+    static const uint8_t char_o[] = {0x00, 0x00, 0x3C, 0x42, 0x42, 0x42, 0x3C, 0x00};
+    static const uint8_t char_p[] = {0x00, 0x00, 0x5C, 0x62, 0x62, 0x5C, 0x40, 0x40};
+    static const uint8_t char_a[] = {0x00, 0x00, 0x3C, 0x02, 0x3E, 0x42, 0x3E, 0x00};
+    static const uint8_t char_r[] = {0x00, 0x00, 0x5C, 0x62, 0x40, 0x40, 0x40, 0x00};
+    static const uint8_t char_sp[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    
+    switch(c) {
+        case 'h': return char_h;
+        case 'e': return char_e;
+        case 'l': return char_l;
+        case 'o': return char_o;
+        case 'p': return char_p;
+        case 'a': return char_a;
+        case 'r': return char_r;
+        default: return char_sp;
+    }
+}
+
+void draw_pixel(int x, int y, int color) {
+    if (x < 0 || x >= (EPD_WIDTH_BYTES * 8) || y < 0 || y >= EPD_HEIGHT) return;
+    
+    int idx = y * EPD_WIDTH_BYTES + (x / 8);
+    uint8_t mask = 0x80 >> (x % 8);
+
+    if (color) {
+        framebuffer[idx] |= mask; // White
+    } else {
+        framebuffer[idx] &= ~mask; // Black
+    }
+}
+
+void draw_char(int x, int y, char c, int scale) {
+    const uint8_t *bitmap = get_char_bitmap(c);
+    for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < 8; j++) {
+            /* Check bit j in row i */
+            if (bitmap[i] & (0x80 >> j)) {
+                for (int dy = 0; dy < scale; dy++) {
+                    for (int dx = 0; dx < scale; dx++) {
+                        draw_pixel(x + j * scale + dx, y + i * scale + dy, 0); // Black
+                    }
+                }
+            }
+        }
+    }
+}
+
+void draw_string(int x, int y, const char *str, int scale) {
+    while (*str) {
+        draw_char(x, y, *str, scale);
+        x += 8 * scale;
+        str++;
+    }
+}
+
+void epd_display_framebuffer(void)
 {
-    uint16_t width_bytes = 16; 
-    uint16_t height = 250;
+    /* Set counters to 0,0 */
+    epd_send_cmd(0x4E); 
+    epd_send_data(0x00);
+    epd_send_cmd(0x4F); 
+    epd_send_data(0x00);
+    epd_send_data(0x00);
     
     epd_send_cmd(0x24); // Write RAM
-    for (int i = 0; i < width_bytes * height; i++) {
-        epd_send_data(0xFF); // White
+    for (int i = 0; i < sizeof(framebuffer); i++) {
+        epd_send_data(framebuffer[i]);
     }
     
     LOG_INF("Activating Display...");
@@ -141,8 +212,16 @@ int main(void)
     
     epd_init_v4();
     
-    LOG_INF("Clearing Screen (White)...");
-    epd_clear_screen();
+    /* Clear buffer to white (0xFF) */
+    memset(framebuffer, 0xFF, sizeof(framebuffer));
+
+    /* Draw text */
+    LOG_INF("Drawing 'hello epaper'...");
+    draw_string(10, 50, "hello", 2);
+    draw_string(10, 70, "epaper", 2);
+
+    /* Send to display */
+    epd_display_framebuffer();
 
     LOG_INF("Test Complete.");
     return 0;
