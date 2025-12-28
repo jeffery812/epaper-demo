@@ -1,100 +1,149 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
-#include <zephyr/drivers/display.h>
-#include <zephyr/display/cfb.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/spi.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(epaper_app, LOG_LEVEL_DBG);
+LOG_MODULE_REGISTER(raw_epd, LOG_LEVEL_INF);
 
-static void dump_display_info(const struct device *dev)
+/* SPI configuration */
+#define SPI_OP  (SPI_OP_MODE_MASTER | SPI_WORD_SET(8))
+
+static const struct spi_dt_spec spi_dev = SPI_DT_SPEC_GET(DT_NODELABEL(raw_spi), SPI_OP, 0);
+
+static const struct gpio_dt_spec busy_gpio = GPIO_DT_SPEC_GET(DT_NODELABEL(busy_pin), gpios);
+static const struct gpio_dt_spec rst_gpio = GPIO_DT_SPEC_GET(DT_NODELABEL(reset_pin), gpios);
+static const struct gpio_dt_spec dc_gpio = GPIO_DT_SPEC_GET(DT_NODELABEL(dc_pin), gpios);
+
+static void epd_reset(void)
 {
-	int width = cfb_get_display_parameter(dev, CFB_DISPLAY_WIDTH);
-	int height = cfb_get_display_parameter(dev, CFB_DISPLAY_HEIGHT);
-	int ppt = cfb_get_display_parameter(dev, CFB_DISPLAY_PPT);
-	int rows = cfb_get_display_parameter(dev, CFB_DISPLAY_ROWS);
-	int cols = cfb_get_display_parameter(dev, CFB_DISPLAY_COLS);
-	int fonts = cfb_get_numof_fonts(dev);
-
-	LOG_INF("CFB metrics -> width:%d height:%d ppt:%d rows:%d cols:%d fonts:%d",
-		width, height, ppt, rows, cols, fonts);
+    if (!gpio_is_ready_dt(&rst_gpio)) return;
+    
+    gpio_pin_set_dt(&rst_gpio, 1); // Active (Low)
+    k_msleep(20);
+    gpio_pin_set_dt(&rst_gpio, 0); // Inactive (High)
+    k_msleep(20);
 }
 
-static int print_line(const struct device *dev, const char *msg, uint16_t x, uint16_t y)
+static void epd_send_cmd(uint8_t cmd)
 {
-	int err = cfb_print(dev, msg, x, y);
+    /* DC Low = Command */
+    gpio_pin_set_dt(&dc_gpio, 1); 
+    struct spi_buf buf = {.buf = &cmd, .len = 1};
+    struct spi_buf_set buf_set = {.buffers = &buf, .count = 1};
+    spi_write_dt(&spi_dev, &buf_set);
+}
 
-	if (err) {
-		LOG_ERR("cfb_print(\"%s\") failed at (%u,%u) (%d)", msg, x, y, err);
-	}
+static void epd_send_data(uint8_t data)
+{
+    /* DC High = Data */
+    gpio_pin_set_dt(&dc_gpio, 0);
+    struct spi_buf buf = {.buf = &data, .len = 1};
+    struct spi_buf_set buf_set = {.buffers = &buf, .count = 1};
+    spi_write_dt(&spi_dev, &buf_set);
+}
 
-	return err;
+static void epd_wait_busy(void)
+{
+    LOG_INF("Waiting for BUSY...");
+    int timeout = 500; // 5 seconds
+    while (gpio_pin_get_dt(&busy_gpio) == 1) {
+        k_msleep(10);
+        if (--timeout == 0) {
+            LOG_ERR("BUSY Timeout!");
+            break;
+        }
+    }
+    LOG_INF("BUSY Released.");
+}
+
+void epd_init_v4(void)
+{
+    epd_reset();
+    epd_wait_busy();
+
+    LOG_INF("Sending Init Commands...");
+    
+    epd_send_cmd(0x12); // SW Reset
+    epd_wait_busy();
+
+    epd_send_cmd(0x01); // Driver output control
+    epd_send_data(0xF9);
+    epd_send_data(0x00);
+    epd_send_data(0x00);
+
+    epd_send_cmd(0x11); // Data entry mode
+    epd_send_data(0x03);
+
+    epd_send_cmd(0x3C); // BorderWavefrom
+    epd_send_data(0x05);
+
+    epd_send_cmd(0x18); // Temp Sensor
+    epd_send_data(0x80); // Internal
+
+    /* Soft Start Patch for V4 */
+    LOG_INF("Sending Soft Start Patch...");
+    epd_send_cmd(0x0C); 
+    epd_send_data(0xAE);
+    epd_send_data(0xC7);
+    epd_send_data(0xC3);
+    epd_send_data(0xC0);
+    epd_send_data(0x80); 
+
+    epd_send_cmd(0x44); // Set Ram-X
+    epd_send_data(0x00);
+    epd_send_data(0x0F); // 128/8 - 1 = 15
+
+    epd_send_cmd(0x45); // Set Ram-Y
+    epd_send_data(0xF9); // 249
+    epd_send_data(0x00);
+    epd_send_data(0x00);
+    epd_send_data(0x00);
+}
+
+void epd_clear_screen(void)
+{
+    uint16_t width_bytes = 16; 
+    uint16_t height = 250;
+    
+    epd_send_cmd(0x24); // Write RAM
+    for (int i = 0; i < width_bytes * height; i++) {
+        epd_send_data(0xFF); // White
+    }
+    
+    LOG_INF("Activating Display...");
+    epd_send_cmd(0x22); // Display Update Control 2
+    epd_send_data(0xF7); // Load LUT from OTP + Display
+    
+    epd_send_cmd(0x20); // Master Activation
+    epd_wait_busy();
 }
 
 int main(void)
 {
-	const struct device *dev = DEVICE_DT_GET(DT_NODELABEL(epd));
-	int err;
+    LOG_INF("Raw SPI E-Paper Test Start");
 
-	LOG_INF("epaper-hello-world boot");
+    if (!spi_is_ready_dt(&spi_dev)) {
+        LOG_ERR("SPI device not ready");
+        return 0;
+    }
+    
+    if (!gpio_is_ready_dt(&busy_gpio) || !gpio_is_ready_dt(&rst_gpio) || !gpio_is_ready_dt(&dc_gpio)) {
+        LOG_ERR("GPIO devices not ready");
+        return 0;
+    }
 
-	if (!device_is_ready(dev)) {
-		LOG_ERR("E-Paper device %s not ready", dev->name);
-		return -EIO;
-	}
+    gpio_pin_configure_dt(&busy_gpio, GPIO_INPUT);
+    gpio_pin_configure_dt(&rst_gpio, GPIO_OUTPUT_ACTIVE);
+    gpio_pin_configure_dt(&dc_gpio, GPIO_OUTPUT);
 
-	LOG_INF("Using display device %s", dev->name);
+    LOG_INF("Hardware Initialized. Starting Sequence...");
+    
+    epd_init_v4();
+    
+    LOG_INF("Clearing Screen (White)...");
+    epd_clear_screen();
 
-	if (display_set_pixel_format(dev, PIXEL_FORMAT_MONO10) &&
-	    display_set_pixel_format(dev, PIXEL_FORMAT_MONO01)) {
-		LOG_ERR("Failed to set MONO pixel format");
-		return -ENODEV;
-	}
-
-	err = cfb_framebuffer_init(dev);
-	if (err) {
-		LOG_ERR("Framebuffer init failed (%d)", err);
-		return err;
-	}
-
-	dump_display_info(dev);
-
-	err = cfb_framebuffer_set_font(dev, 0);
-	if (err) {
-		LOG_WRN("Unable to set font 0 (%d), continuing with default", err);
-	}
-
-	err = cfb_framebuffer_clear(dev, true);
-	if (err) {
-		LOG_ERR("Framebuffer clear failed (%d)", err);
-		return err;
-	}
-
-	err = display_blanking_off(dev);
-	if (err && err != -ENOTSUP) {
-		LOG_WRN("display_blanking_off failed (%d)", err);
-	}
-
-	if (print_line(dev, "Hello ePark!", 10, 10) ||
-	    print_line(dev, "Waveshare E-Paper", 10, 30) ||
-	    print_line(dev, "v4.0 Ready", 10, 50)) {
-		LOG_ERR("Printing failed, aborting refresh");
-		return -EIO;
-	}
-
-        LOG_INF("begin physical refresh...");
-	err = cfb_framebuffer_finalize(dev);
-        LOG_INF("physical refresh done. waiting another 5 seconds...");
-        k_sleep(K_SECONDS(5)); // 强制等5秒，观察屏幕有没有“闪烁”一下
-	if (err) {
-		LOG_ERR("Framebuffer finalize failed (%d)", err);
-		return err;
-	}
-
-	LOG_INF("E-Paper refresh complete");
-
-	while (1) {
-		k_sleep(K_FOREVER);
-	}
-
-	return 0;
+    LOG_INF("Test Complete.");
+    return 0;
 }
