@@ -3,4 +3,4 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 project(epaper-hello-world)
 
-target_sources(app PRIVATE src/main.c src/epd_driver.c src/epd_graphics.c)
+target_sources(app PRIVATE src/main.c src/epd_driver.c src/epd_graphics.c src/display_lib.c)
