@@ -50,7 +50,7 @@ int main(void)
 
 	// int seconds = (12 * 3600) + (34 * 60);
 	int seconds = 0;
-	int duration_in_seconds = 5 * 60; // 5 minutes
+	int duration_in_seconds = 60 * 60; // 60 minutes
 	while (1) {
 		char time_str[6];
 		int hours = (seconds / 3600) % 24;
@@ -60,7 +60,7 @@ int main(void)
 
 		cfb_framebuffer_clear(dev, false);
 		/* Align to 8-pixel boundary to avoid partial glyph clipping */
-		display_print(dev, time_str, 10, 40);
+		display_print(dev, time_str, 50, 40);
 		display_flush(dev);
 
 		seconds += duration_in_seconds;
