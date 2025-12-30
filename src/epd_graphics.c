@@ -60,6 +60,11 @@ static int custom_epd_write(const struct device *dev, const uint16_t x, const ui
 		}
 	}
 
+	/* Panel polarity is inverted vs CFB: flip bits to get white background. */
+	for (size_t i = 0; i < sizeof(rotated_buffer); i++) {
+		dst[i] ^= 0xFF;
+	}
+
 	epd_display_framebuffer(rotated_buffer, sizeof(rotated_buffer));
 	return 0;
 }

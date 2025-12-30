@@ -88,9 +88,6 @@ void display_draw_rect(const struct device *dev, uint16_t x, uint16_t y, uint16_
 
 void display_flush(const struct device *dev)
 {
-	/* Invert framebuffer to get black text on white background */
-	cfb_framebuffer_invert(dev);
-	
 	LOG_INF("Finalizing...");
 	cfb_framebuffer_finalize(dev);
 }

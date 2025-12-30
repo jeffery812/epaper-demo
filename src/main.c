@@ -2,6 +2,7 @@
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/display/cfb.h>
+#include <stdio.h>
 
 #include "epd_graphics.h"
 #include "display_lib.h"
@@ -40,17 +41,31 @@ int main(void)
 		}
 	}
 
-	if (best_idx >= 0 && display_set_font(dev, best_idx) == 0) {
-		LOG_INF("Using font index %d (%ux%u)", best_idx, best_w, best_h);
-		/* Align to 8-pixel boundary to avoid partial glyph clipping */
-		display_print(dev, "12:34", 10, 40);
-	} else {
+	if (best_idx < 0 || display_set_font(dev, best_idx) != 0) {
 		LOG_WRN("No usable CFB fonts found");
+		return 0;
 	}
 
-	/* 2. Flush internal RAM buffer to Display (Slow, SPI transaction) */
-	display_flush(dev);
+	LOG_INF("Using font index %d (%ux%u)", best_idx, best_w, best_h);
 
-	LOG_INF("Done.");
+	// int seconds = (12 * 3600) + (34 * 60);
+	int seconds = 0;
+	int duration_in_seconds = 5 * 60; // 5 minutes
+	while (1) {
+		char time_str[6];
+		int hours = (seconds / 3600) % 24;
+		int minutes = (seconds / 60) % 60;
+
+		snprintf(time_str, sizeof(time_str), "%02d:%02d", hours, minutes);
+
+		cfb_framebuffer_clear(dev, false);
+		/* Align to 8-pixel boundary to avoid partial glyph clipping */
+		display_print(dev, time_str, 10, 40);
+		display_flush(dev);
+
+		seconds += duration_in_seconds;
+		k_sleep(K_SECONDS(duration_in_seconds));
+	}
+
 	return 0;
 }
